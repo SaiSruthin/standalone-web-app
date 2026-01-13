@@ -1,0 +1,155 @@
+# Implementation prompt — focus strictly on **given functionalities** (organizations, projects, tasks, roles, workflows, activity history).  
+**Do not change architecture, UI polish, or add unrelated features.** Prioritize correctness, permissions, workflow rules, and auditability.
+
+---
+
+## Scope & constraints
+- Work only on **functionality**. Leave existing DB schema, service boundaries, and infra unchanged unless a tiny schema migration is required to meet correctness/audit needs.  
+- Fix bugs and remove/adjust extra behaviours that violate the rules below.  
+- Provide code, tests, and a short migration plan for any DB changes. No UI styling work.
+
+---
+
+## Goals / deliverables
+1. A precise functional spec implementing the features below.  
+2. API contract (endpoints + request/response examples) for all operations.  
+3. Permissions matrix and enforcement rules (server-side).  
+4. Workflow state machine definitions and transition guards.  
+5. Activity / audit history model and retention notes.  
+6. Unit + integration tests for correctness, concurrent scenarios, and permission enforcement.  
+7. Migration script(s) if any DB schema changes are required.  
+8. Short verification checklist for QA.
+
+---
+
+## Domain rules & acceptance criteria
+
+### 1) Organizations
+- **Structure**: organization → projects → tasks. Users belong to organizations via memberships.  
+- **Org CRUD**
+  - Only users with `org_admin` in that organization can create, update, delete organization metadata.
+  - Deleting an org must cascade-soft-delete projects and tasks, retain activity history for audit (no hard delete).
+- **Memberships**
+  - Roles scoped to organization or project (see Roles).  
+  - Invites: creating membership must create a pending membership record; accepted by user to become active.
+
+**Acceptance:** Only `org_admin` actions succeed for org-level changes. Soft-delete leaves `deleted_at` timestamp and prevents normal operations.
+
+---
+
+### 2) Projects
+- **Structure & ownership**
+  - Projects belong to exactly one organization.
+  - Project creation: allowed to `org_admin` and `project_manager`.
+- **Project CRUD**
+  - Project `delete` = soft-delete. Cannot create tasks in soft-deleted project.
+- **Project permissions**
+  - Only members with `project_admin` or `project_editor` can create/edit tasks in that project.
+  - Read access: members of the organization can read projects unless project is explicitly private.
+
+**Acceptance:** Enforce project-level creation/edit restrictions; operations on deleted projects rejected with 4xx.
+
+---
+
+### 3) Tasks
+- **Core fields**: id, title, description, assignee_id (nullable), reporter_id, project_id, status, priority, due_date, created_by, updated_by, version, deleted_at.
+- **Statuses**: `backlog` → `todo` → `in_progress` → `in_review` → `done` → `archived`.
+- **Task CRUD**
+  - Create: allowed to users with `task_create` on project.
+  - Update: allowed to users with `task_edit` or assignee for limited fields.
+  - Delete: only `project_admin` or `org_admin`.
+- **Concurrency**
+  - Use optimistic locking via `version`. Reject conflicts with 409.
+- **Validation**
+  - Title non-empty, max length 250.
+  - Assignee must be active member of organization.
+
+**Acceptance:** All task operations validated; conflicting updates return 409.
+
+---
+
+### 4) Roles & Permissions (RBAC)
+- **Roles**: `org_admin`, `project_admin`, `project_editor`, `project_viewer`, `assignee`.
+- **Enforcement**
+  - Server-side enforcement for every API call.
+- **Role assignment**
+  - Only admins can assign roles.
+- **Edge cases**
+  - Role removal affects future requests immediately.
+
+**Acceptance:** Permission middleware used across all endpoints.
+
+---
+
+### 5) Workflows & Transition Rules
+- **Workflow model**
+  - Each project has an associated workflow definition.
+- **Transition guards**
+  - Only allowed roles can perform transitions.
+- **Enforcement**
+  - Illegal transitions rejected with 422.
+- **Approvals**
+  - Required approvals must exist before moving to `done`.
+
+**Acceptance:** Deterministic workflow validator enforced server-side.
+
+---
+
+### 6) Activity history / audit
+- **Recorded events**
+  - All create/update/delete actions, role changes, workflow changes, approvals.
+- **Audit schema**
+  - timestamp, actor_id, target_type, target_id, action, details, request_id.
+- **Immutability**
+  - Append-only.
+- **Visibility**
+  - Scoped by org/project membership.
+- **Retention**
+  - Configurable retention with soft-archiving.
+- **Retrieval**
+  - Paginated, filterable endpoints.
+
+**Acceptance:** Every mutation writes an audit record.
+
+---
+
+## API Contracts
+- `POST /api/orgs`
+- `PATCH /api/orgs/:orgId`
+- `POST /api/orgs/:orgId/projects`
+- `POST /api/projects/:projectId/tasks`
+- `PATCH /api/tasks/:taskId`
+- `POST /api/tasks/:taskId/transition`
+- `POST /api/projects/:projectId/roles`
+- `GET /api/projects/:projectId/activity`
+
+---
+
+## Testing requirements
+- Unit tests for permissions, workflows, concurrency.
+- Integration tests for full lifecycle.
+- Concurrency tests for conflicting transitions.
+
+---
+
+## DB / migration notes
+- Add `activity_logs` table if absent.
+- Add `version` column to tasks if absent.
+
+---
+
+## Observability
+- Clear error codes and messages.
+- Correlation IDs in logs and audit entries.
+
+---
+
+## Acceptance checklist
+- Org/project/task permission correctness.
+- Workflow transition enforcement.
+- Concurrency handling.
+- Audit completeness.
+
+---
+
+Implement exactly these rules. Do not add unrelated features.
